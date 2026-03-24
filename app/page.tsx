@@ -538,7 +538,7 @@ export default function App() {
                       </div>
                       
                       {/* Breakdown Card */}
-                      <BreakdownCard breakdown={payout.breakdown} filename={payout.filename} />
+                      <BreakdownCard breakdown={payout.breakdown} refunds={totalRefunds} filename={payout.filename} />
                     </div>
                     <div className="text-bakery-600 ml-4">
                       {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
@@ -606,7 +606,7 @@ export default function App() {
                             Total:
                           </td>
                           <td className="px-4 py-3 text-sm font-bold text-right text-bakery-900">
-                            {formatCurrency(totalAmount)}
+                            {formatCurrency(totalAmount + totalRefunds)}
                           </td>
                         </tr>
                         <tr className="bg-gray-50">
@@ -763,7 +763,7 @@ export default function App() {
     </div>
   );
 
-  const BreakdownCard = ({ breakdown, filename }: { breakdown: any, filename: string }) => {
+  const BreakdownCard = ({ breakdown,refunds, filename }: { breakdown: any,refunds :any,  filename: string }) => {
     return (
       <div className="grid grid-cols-5 gap-3 mt-2 pt-2 border-t border-bakery-200">
         <div className="bg-green-50 rounded-lg p-2 text-center">
@@ -776,7 +776,7 @@ export default function App() {
         </div>
         <div className="bg-orange-50 rounded-lg p-2 text-center">
           <p className="text-xs text-orange-600 font-medium">Refunds</p>
-          <p className="text-sm font-bold text-orange-700">-{formatCurrency(breakdown.refunds)}</p>
+          <p className="text-sm font-bold text-orange-700">-{formatCurrency(refunds)}</p>
         </div>
         <div className="bg-yellow-50 rounded-lg p-2 text-center">
           <p className="text-xs text-yellow-600 font-medium">Adjustments</p>
