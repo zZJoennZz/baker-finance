@@ -15,35 +15,30 @@ interface PayoutRecord {
   uncategorized: any[];
   total_orders: number;
   matched_orders: number;
-  payout_dates: any,
+  payout_dates: any;
+  breakdown: {
+    gross_amount: number;
+    fees: number;
+    net_amount: number;
+    refunds: number;
+    adjustments: number;
+  };
 }
 
-// Helper function to sanitize sheet names for Excel
 function sanitizeSheetName(name: string): string {
-  // Excel forbidden characters: : \ / ? * [ ]
   let sanitized = name.replace(/[:\\\/\?\*\[\]]/g, '_');
-  
-  // Replace any other special characters (including |) with underscore
-  // This regex matches any character that's not a letter, number, underscore, or hyphen
   sanitized = sanitized.replace(/[^a-zA-Z0-9_\-]/g, '_');
-  
-  // Replace multiple underscores with single underscore
   sanitized = sanitized.replace(/_+/g, '_');
-  
-  // Remove leading/trailing underscores
   sanitized = sanitized.replace(/^_+|_+$/g, '');
   
-  // Ensure first character is a letter or underscore (Excel requirement)
   if (sanitized.length > 0 && !/^[A-Za-z_]/.test(sanitized)) {
     sanitized = 'Sheet_' + sanitized;
   }
   
-  // If empty after sanitization, provide a default
   if (sanitized.length === 0) {
     sanitized = 'Sheet';
   }
   
-  // Trim to Excel's 31 character limit
   if (sanitized.length > 31) {
     sanitized = sanitized.slice(0, 31);
   }
@@ -51,26 +46,20 @@ function sanitizeSheetName(name: string): string {
   return sanitized;
 }
 
-// Helper function to create unique sheet names
 function getUniqueSheetName(baseName: string, existingNames: Set<string>): string {
-  // First sanitize the base name
   let sanitized = sanitizeSheetName(baseName);
   
-  // If the name is already taken, add a number suffix
   if (existingNames.has(sanitized)) {
     let counter = 1;
     let uniqueName = '';
     
-    // Try different suffixes until we find a unique name within 31 chars
     while (counter <= 100) {
       const suffix = `_${counter}`;
       const maxBaseLength = 31 - suffix.length;
       
-      // Truncate base name if needed
       let truncatedBase = sanitized;
       if (sanitized.length > maxBaseLength) {
         truncatedBase = sanitized.slice(0, maxBaseLength);
-        // Remove trailing underscore if we truncated in the middle of one
         truncatedBase = truncatedBase.replace(/_$/, '');
       }
       
@@ -106,7 +95,7 @@ export async function POST(request: NextRequest) {
     const salesText = await salesFile.text();
     const salesData = Papa.parse(salesText, { header: true, skipEmptyLines: true }).data;
     
-    // Standardize sales column names
+    // Separate positive sales and negative refunds
     const salesDF = salesData.map((row: any) => ({
       Order_Number: row['Order name'] || row['Order_Number'] || '',
       Sales_ID: row['Sale ID'] || row['Sales_ID'] || '',
@@ -114,18 +103,34 @@ export async function POST(request: NextRequest) {
       Amount: parseFloat(row['Total sales'] || row['Amount'] || 0)
     })).filter(row => row.Order_Number);
 
-    // Group sales by order number to get totals
+    const positiveSales = salesDF.filter(row => row.Amount > 0);
+    const refundSales = salesDF.filter(row => row.Amount < 0);
+    
+    // Group positive sales by order number
     const salesTotals = new Map();
-    salesDF.forEach(row => {
+    positiveSales.forEach(row => {
       const current = salesTotals.get(row.Order_Number) || 0;
       salesTotals.set(row.Order_Number, current + row.Amount);
     });
+    
+    // Group refunds by order number with their categories
+    const refundsByOrder = new Map();
+    refundSales.forEach(row => {
+      const refunds = refundsByOrder.get(row.Order_Number) || [];
+      refunds.push({
+        Category: row.Category,
+        Amount: Math.abs(row.Amount) // Store as positive for display
+      });
+      refundsByOrder.set(row.Order_Number, refunds);
+    });
 
-    // Process each payout file
     const results: PayoutRecord[] = [];
     const summaryStats = {
       total_payouts: 0,
       total_sales_matched: 0,
+      total_fees: 0,
+      total_refunds: 0,
+      total_adjustments: 0,
       categories: {} as Record<string, number>
     };
 
@@ -150,63 +155,108 @@ export async function POST(request: NextRequest) {
           uncategorized: [],
           total_orders: 0,
           matched_orders: 0,
-          payout_dates: [],
+          payout_dates: { min: '', max: '' },
+          breakdown: {
+            gross_amount: 0,
+            fees: 0,
+            net_amount: 0,
+            refunds: 0,
+            adjustments: 0
+          }
         });
         continue;
       }
 
-      // Process each payout transaction
+      let breakdown = {
+        gross_amount: 0,
+        fees: 0,
+        net_amount: 0,
+        refunds: 0,
+        adjustments: 0
+      };
+
       const processedData: any[] = [];
       const uncategorizedData: any[] = [];
-      let totalPayoutAmount = 0;
+      
       for (const row of payoutData) {
         const orderNumber = row[orderCol];
         const grossAmount = parseFloat(row['Amount'] || row['Gross_Amount'] || 0);
+        const feeAmount = parseFloat(row['Fee'] || row['Fee_Amount'] || 0);
+        const netAmount = parseFloat(row['Net'] || row['Net_Amount'] || 0);
+        const refundAmount = parseFloat(row['Refund'] || row['Refund_Amount'] || 0);
+        const adjustmentAmount = parseFloat(row['Adjustment'] || row['Adjustment_Amount'] || 0);
         const payoutDate = row['Payout Date'] || row['Payout_Date'] || '';
+        const transactionType = (row['Type'] || row['Transaction Type'] || '').toLowerCase();
         
-        totalPayoutAmount += grossAmount;
+        breakdown.gross_amount += grossAmount;
+        breakdown.fees += feeAmount;
+        breakdown.net_amount += netAmount;
+        breakdown.refunds += refundAmount;
+        breakdown.adjustments += adjustmentAmount;
 
-        // Find matching sales for this order
-        const matchingSales = salesDF.filter(sale => sale.Order_Number === orderNumber);
+        // Check for refunds in this order
+        const orderRefunds = refundsByOrder.get(orderNumber) || [];
         
-        if (matchingSales.length === 0) {
+        // Find matching sales for this order
+        const matchingSales = positiveSales.filter(sale => sale.Order_Number === orderNumber);
+        
+        if (matchingSales.length === 0 && orderRefunds.length === 0) {
           // Uncategorized transaction
           uncategorizedData.push({
-            Order_Number: orderNumber,
+            Transaction_Date: row['Transaction Date'] || row['Transaction_Date'] || payoutDate,
             Payout_Date: payoutDate,
-            Gross_Amount: grossAmount,
-            Category: 'Uncategorized'
+            Order_Number: orderNumber,
+            Category: 'Uncategorized',
+            Amount: grossAmount,
+            Type: transactionType || 'Unknown'
           });
           continue;
         }
 
-        // Calculate total sales for this order
-        const orderTotalSales = salesTotals.get(orderNumber) || 1;
+        // Process each transaction - combine sales and refunds
+        const orderItems = [];
         
-        // Distribute payout amount proportionally across sales
-        for (const sale of matchingSales) {
-          const scaledAmount = (sale.Amount / orderTotalSales) * grossAmount;
-          
-          const record = {
-            Transaction_Date: row['Transaction Date'] || row['Transaction_Date'] || payoutDate,
-            Payout_Date: payoutDate,
-            Category: sale.Category,
-            Amount: scaledAmount,
-            Order_Number: orderNumber
-          };
-          
-          processedData.push(record);
-          
-          // Update stats
-          if (sale.Category !== 'Uncategorized') {
+        // Add sales items
+        if (matchingSales.length > 0) {
+          const orderTotalSales = salesTotals.get(orderNumber) || 1;
+          for (const sale of matchingSales) {
+            const scaledAmount = (sale.Amount / orderTotalSales) * grossAmount;
+            orderItems.push({
+              Transaction_Date: row['Transaction Date'] || row['Transaction_Date'] || payoutDate,
+              Payout_Date: payoutDate,
+              Category: sale.Category,
+              Amount: scaledAmount,
+              Type: 'Sale',
+              Order_Number: orderNumber
+            });
+            
             summaryStats.categories[sale.Category] = 
               (summaryStats.categories[sale.Category] || 0) + scaledAmount;
             summaryStats.total_sales_matched += scaledAmount;
           }
         }
+        
+        // Add refund items
+        if (orderRefunds.length > 0) {
+          for (const refund of orderRefunds) {
+            orderItems.push({
+              Transaction_Date: row['Transaction Date'] || row['Transaction_Date'] || payoutDate,
+              Payout_Date: payoutDate,
+              Category: refund.Category,
+              Amount: -refund.Amount, // Negative amount for refunds
+              Type: 'Refund',
+              Order_Number: orderNumber
+            });
+            summaryStats.total_refunds += refund.Amount;
+          }
+        }
+        
+        processedData.push(...orderItems);
       }
 
-      summaryStats.total_payouts += totalPayoutAmount;
+      summaryStats.total_payouts += breakdown.gross_amount;
+      summaryStats.total_fees += breakdown.fees;
+      summaryStats.total_adjustments += breakdown.adjustments;
 
       results.push({
         filename: payoutFile.name,
@@ -223,15 +273,15 @@ export async function POST(request: NextRequest) {
         data: processedData,
         uncategorized: uncategorizedData,
         total_orders: payoutData.length,
-        matched_orders: payoutData.length - uncategorizedData.length
+        matched_orders: processedData.filter(item => item.Type !== 'Refund').length,
+        breakdown: breakdown
       });
     }
 
-    // Create Excel file with unique sheet names
+    // Create Excel file
     const workbook = XLSX.utils.book_new();
     const usedSheetNames = new Set<string>();
     
-    // Create summary sheet with all data
     const allData = results.flatMap(result => 
       result.data.map(row => ({
         Source_File: result.filename,
@@ -245,18 +295,14 @@ export async function POST(request: NextRequest) {
       XLSX.utils.book_append_sheet(workbook, summarySheet, summarySheetName);
     }
     
-    // Create individual sheets per file
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       
       if (result.data.length > 0) {
         const sheet = XLSX.utils.json_to_sheet(result.data);
-        // Extract base name from filename without extension
         let baseName = result.filename.replace(/\.csv$/i, '');
         
-        // If the filename is too long, use a shorter identifier
         if (baseName.length > 25) {
-          // Use index for long filenames to ensure uniqueness
           baseName = `File_${i + 1}`;
         }
         
@@ -264,13 +310,11 @@ export async function POST(request: NextRequest) {
         XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
       }
       
-      // Uncategorized sheet
       if (result.uncategorized.length > 0) {
         const uncSheet = XLSX.utils.json_to_sheet(result.uncategorized);
         let baseName = `Uncat_${result.filename.replace(/\.csv$/i, '')}`;
         
-        // If the filename is too long, use a shorter identifier
-        if (baseName.length > 23) { // Leave room for "Uncat_" prefix and suffix
+        if (baseName.length > 23) {
           baseName = `Uncat_${i + 1}`;
         }
         
@@ -279,7 +323,6 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    // Generate Excel buffer
     const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     const excelBase64 = excelBuffer.toString('base64');
     

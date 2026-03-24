@@ -169,6 +169,14 @@ export default function App() {
     }).format(amount);
   };
 
+  const formatNumber = (amount: any) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'decimal',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(amount);
+  };
+
   const formatDate = (dateString: any) => {
     if (!dateString) return 'N/A';
     try {
@@ -400,7 +408,6 @@ export default function App() {
     const totalMatched = getTotalMatched();
     const totalUnmatched = getTotalUnmatched();
     
-    // Helper to format payout date range
     const formatPayoutDateRange = (payout: any) => {
       if (!payout.payout_dates) return 'No date available';
       const { min, max } = payout.payout_dates;
@@ -437,23 +444,40 @@ export default function App() {
           
           <div className="grid grid-cols-4 gap-4 mt-6">
             <div className="bg-white/10 rounded-lg p-3">
-              <p className="text-sm text-bakery-200">Total Payouts</p>
+              <p className="text-sm text-bakery-200">Total Gross</p>
               <p className="text-2xl font-bold">{formatCurrency(result.stats.total_payouts)}</p>
             </div>
             <div className="bg-white/10 rounded-lg p-3">
-              <p className="text-sm text-bakery-200">Matched Sales</p>
-              <p className="text-2xl font-bold">{formatCurrency(result.stats.total_sales_matched)}</p>
+              <p className="text-sm text-bakery-200">Total Fees</p>
+              <p className="text-2xl font-bold">-{formatCurrency(result.stats.total_fees)}</p>
             </div>
             <div className="bg-white/10 rounded-lg p-3">
-              <p className="text-sm text-bakery-200">Match Rate</p>
+              <p className="text-sm text-bakery-200">Total Refunds</p>
+              <p className="text-2xl font-bold">-{formatCurrency(result.stats.total_refunds)}</p>
+            </div>
+            <div className="bg-white/10 rounded-lg p-3">
+              <p className="text-sm text-bakery-200">Net Received</p>
               <p className="text-2xl font-bold">
+                {formatCurrency(result.stats.total_payouts - result.stats.total_fees - result.stats.total_refunds + result.stats.total_adjustments)}
+              </p>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-3 gap-4 mt-4">
+            <div className="bg-white/10 rounded-lg p-2">
+              <p className="text-xs text-bakery-200">Matched Sales</p>
+              <p className="text-lg font-bold">{formatCurrency(result.stats.total_sales_matched)}</p>
+            </div>
+            <div className="bg-white/10 rounded-lg p-2">
+              <p className="text-xs text-bakery-200">Match Rate</p>
+              <p className="text-lg font-bold">
                 {((result.stats.total_sales_matched / result.stats.total_payouts) * 100).toFixed(1)}%
               </p>
             </div>
-            <div className="bg-white/10 rounded-lg p-3">
-              <p className="text-sm text-bakery-200">Transactions</p>
-              <p className="text-2xl font-bold">
-                {totalMatched + totalUnmatched}
+            <div className="bg-white/10 rounded-lg p-2">
+              <p className="text-xs text-bakery-200">Transactions</p>
+              <p className="text-lg font-bold">
+                {result.results.reduce((sum: any, payout: any) => sum + payout.data.length, 0)}
               </p>
               <p className="text-xs text-bakery-200">
                 {totalMatched} matched, {totalUnmatched} unmatched
@@ -462,49 +486,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Filters */}
-        {/* <div className="bg-white rounded-xl shadow-md p-4">
-          <div className="flex flex-wrap gap-3 items-center justify-between">
-            <div className="flex gap-2 flex-wrap">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Search by order or category..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-bakery-500 w-64"
-                />
-              </div>
-              
-              <select
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-bakery-500"
-              >
-                {categories.map((cat: any) => (
-                  <option key={cat} value={cat}>
-                    {cat === 'all' ? 'All Categories' : cat}
-                  </option>
-                ))}
-              </select>
-            </div>
-            
-            {(searchTerm || categoryFilter !== 'all') && (
-              <button
-                onClick={() => {
-                  setSearchTerm('');
-                  setCategoryFilter('all');
-                }}
-                className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
-              >
-                <X className="w-3 h-3" />
-                Clear filters
-              </button>
-            )}
-          </div>
-        </div> */}
-
         {/* Payout Tables */}
         <div className="space-y-6">
           {result.results.map((payout: any, idx: any) => {
@@ -512,16 +493,18 @@ export default function App() {
             const isExpanded = expandedPayouts.has(idx);
             const unmatchedCount = payout.uncategorized?.length || 0;
             const totalAmount = filteredData.reduce((sum, item) => sum + item.Amount, 0);
+            const totalRefunds = filteredData.filter(item => item.Type === 'Refund').reduce((sum, item) => sum + Math.abs(item.Amount), 0);
+            const totalSales = filteredData.filter(item => item.Type === 'Sale').reduce((sum, item) => sum + item.Amount, 0);
             const payoutDateRange = formatPayoutDateRange(payout);
             
             return (
-              <div key={idx} className="bg-gray rounded-xl shadow-md overflow-hidden">
-                {/* Payout Header - Shows Payout Date */}
+              <div key={idx} className="bg-white rounded-xl shadow-md overflow-hidden">
+                {/* Payout Header */}
                 <div 
                   className="p-4 bg-gradient-to-r from-bakery-50 to-white border-b border-gray-200 cursor-pointer hover:from-bakery-100 transition-colors"
                   onClick={() => togglePayout(idx)}
                 >
-                  <div className="flex justify-between items-center">
+                  <div className="flex justify-between items-start">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-2">
                         <div className="flex items-center gap-2">
@@ -536,25 +519,34 @@ export default function App() {
                           </span>
                         )}
                       </div>
-                      <div className="flex gap-6 text-sm">
+                      <div className="flex gap-6 text-sm mb-2">
                         <div className="text-gray-600">
-                          <span className="font-medium">{filteredData.length}</span> matched transactions
+                          <span className="font-medium">{filteredData.length}</span> total items
                         </div>
                         <div className="text-gray-600">
-                          Total: <span className="font-semibold text-bakery-700">{formatCurrency(totalAmount)}</span>
+                          Sales: <span className="font-semibold text-green-600">{formatCurrency(totalSales)}</span>
+                        </div>
+                        <div className="text-gray-600">
+                          Refunds: <span className="font-semibold text-red-600">-{formatCurrency(totalRefunds)}</span>
+                        </div>
+                        <div className="text-gray-600">
+                          Net: <span className="font-semibold text-bakery-700">{formatCurrency(totalAmount)}</span>
                         </div>
                         <div className="text-gray-500 text-xs">
                           Source: {payout.filename}
                         </div>
                       </div>
+                      
+                      {/* Breakdown Card */}
+                      <BreakdownCard breakdown={payout.breakdown} filename={payout.filename} />
                     </div>
-                    <div className="text-bakery-600">
+                    <div className="text-bakery-600 ml-4">
                       {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
                     </div>
                   </div>
                 </div>
 
-                {/* Payout Table - Shows Transaction Date */}
+                {/* Payout Table - Shows all items with Type column */}
                 {isExpanded && filteredData.length > 0 && (
                   <div className="overflow-x-auto">
                     <table className="w-full">
@@ -567,6 +559,9 @@ export default function App() {
                             Order Number
                           </th>
                           <th className="px-4 py-3 text-left text-sm font-semibold text-bakery-900">
+                            Type
+                          </th>
+                          <th className="px-4 py-3 text-left text-sm font-semibold text-bakery-900">
                             Category
                           </th>
                           <th className="px-4 py-3 text-right text-sm font-semibold text-bakery-900">
@@ -576,7 +571,7 @@ export default function App() {
                       </thead>
                       <tbody className="divide-y divide-gray-100">
                         {filteredData.map((item, itemIdx) => (
-                          <tr key={itemIdx} className="hover:bg-gray-50 transition-colors">
+                          <tr key={itemIdx} className={`hover:bg-gray-50 transition-colors ${item.Type === 'Refund' ? 'bg-red-50/30' : ''}`}>
                             <td className="px-4 py-3 text-sm text-gray-600">
                               {formatDate(item.Transaction_Date || item.Payout_Date)}
                             </td>
@@ -584,25 +579,54 @@ export default function App() {
                               {item.Order_Number}
                             </td>
                             <td className="px-4 py-3 text-sm">
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                item.Type === 'Refund' 
+                                  ? 'bg-red-100 text-red-700' 
+                                  : 'bg-green-100 text-green-700'
+                              }`}>
+                                {item.Type}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-sm">
                               <span className="px-2 py-1 bg-bakery-100 text-bakery-700 rounded-full text-xs">
                                 {item.Category}
                               </span>
                             </td>
-                            <td className="px-4 py-3 text-sm text-right font-mono font-medium text-gray-900">
-                              {formatCurrency(item.Amount)}
+                            <td className={`px-4 py-3 text-sm text-right font-mono font-medium ${
+                              item.Type === 'Refund' ? 'text-red-600' : 'text-gray-900'
+                            }`}>
+                              {item.Type === 'Refund' ? '-' : ''}{formatCurrency(Math.abs(item.Amount))}
                             </td>
                           </tr>
                         ))}
                       </tbody>
                       <tfoot className="bg-gray-50 border-t border-gray-200">
                         <tr>
-                          <td colSpan={3} className="px-4 py-3 text-sm font-semibold text-right text-gray-700">
+                          <td colSpan={4} className="px-4 py-3 text-sm font-semibold text-right text-gray-700">
                             Total:
                           </td>
                           <td className="px-4 py-3 text-sm font-bold text-right text-bakery-900">
                             {formatCurrency(totalAmount)}
                           </td>
                         </tr>
+                        <tr className="bg-gray-50">
+                          <td colSpan={4} className="px-4 py-2 text-xs text-right text-gray-500">
+                            Sales Total:
+                          </td>
+                          <td className="px-4 py-2 text-xs text-right text-green-600 font-medium">
+                            {formatCurrency(totalSales)}
+                          </td>
+                        </tr>
+                        {totalRefunds > 0 && (
+                          <tr className="bg-gray-50">
+                            <td colSpan={4} className="px-4 py-2 text-xs text-right text-gray-500">
+                              Refunds Total:
+                            </td>
+                            <td className="px-4 py-2 text-xs text-right text-red-600 font-medium">
+                              -{formatCurrency(totalRefunds)}
+                            </td>
+                          </tr>
+                        )}
                       </tfoot>
                     </table>
                   </div>
@@ -618,7 +642,7 @@ export default function App() {
           })}
         </div>
 
-        {/* Unmatched Records Section */}
+        {/* Unmatched Records Section - Keep as is */}
         {result.results.some((payout: any) => payout.uncategorized?.length > 0) && (
           <div className="bg-white rounded-xl shadow-md overflow-hidden">
             <div className="p-4 bg-amber-50 border-b border-amber-200">
@@ -636,27 +660,27 @@ export default function App() {
               <table className="w-full">
                 <thead className="bg-amber-50">
                   <tr>
-                    <th className="px-4 py-3 text-left text-sm font-semibold text-amber-900">Payout Date</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-amber-900">Source File</th>
                     <th className="px-4 py-3 text-left text-sm font-semibold text-amber-900">Transaction Date</th>
                     <th className="px-4 py-3 text-left text-sm font-semibold text-amber-900">Order Number</th>
-                    <th className="px-4 py-3 text-right text-sm font-semibold text-amber-900">Gross Amount</th>
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-amber-900">Type</th>
+                    <th className="px-4 py-3 text-right text-sm font-semibold text-amber-900">Amount</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {result.results.map((payout: any, idx: any) => (
                     payout.uncategorized?.map((item: any, itemIdx: any) => (
                       <tr key={`${idx}-${itemIdx}`} className="hover:bg-amber-50 transition-colors">
-                        <td className="px-4 py-3 text-sm text-gray-600">
-                          {formatDate(item.Payout_Date)}
+                        <td className="px-4 py-3 text-sm text-gray-600">{payout.filename}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{formatDate(item.Transaction_Date)}</td>
+                        <td className="px-4 py-3 text-sm font-mono text-gray-900">{item.Order_Number}</td>
+                        <td className="px-4 py-3 text-sm">
+                          <span className="px-2 py-1 bg-gray-100 text-gray-600 rounded-full text-xs">
+                            {item.Type || 'Unknown'}
+                          </span>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">
-                          {formatDate(item.Transaction_Date || item.Payout_Date)}
-                        </td>
-                        <td className="px-4 py-3 text-sm font-mono text-gray-900">
-                          {item.Order_Number}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-right font-mono font-medium text-red-600">
-                          {formatCurrency(item.Gross_Amount || item.Amount)}
+                        <td className="px-4 py-3 text-sm text-right font-mono font-medium text-amber-600">
+                          {formatCurrency(item.Amount)}
                         </td>
                       </tr>
                     ))
@@ -664,14 +688,14 @@ export default function App() {
                 </tbody>
                 <tfoot className="bg-gray-50 border-t border-gray-200">
                   <tr>
-                    <td colSpan={3} className="px-4 py-3 text-sm font-semibold text-right text-gray-700">
+                    <td colSpan={4} className="px-4 py-3 text-sm font-semibold text-right text-gray-700">
                       Total Unmatched:
                     </td>
-                    <td className="px-4 py-3 text-sm font-bold text-right text-red-600">
+                    <td className="px-4 py-3 text-sm font-bold text-right text-amber-600">
                       {formatCurrency(
                         result.results.reduce(
                           (sum: any, payout: any) => sum + (payout.uncategorized?.reduce(
-                            (s: any, item: any) => s + (item.Gross_Amount || item.Amount), 0
+                            (s: any, item: any) => s + (item.Amount), 0
                           ) || 0),
                           0
                         )
@@ -738,6 +762,33 @@ export default function App() {
       </p>
     </div>
   );
+
+  const BreakdownCard = ({ breakdown, filename }: { breakdown: any, filename: string }) => {
+    return (
+      <div className="grid grid-cols-5 gap-3 mt-2 pt-2 border-t border-bakery-200">
+        <div className="bg-green-50 rounded-lg p-2 text-center">
+          <p className="text-xs text-green-600 font-medium">Gross Amount</p>
+          <p className="text-sm font-bold text-green-700">{formatCurrency(breakdown.gross_amount)}</p>
+        </div>
+        <div className="bg-red-50 rounded-lg p-2 text-center">
+          <p className="text-xs text-red-600 font-medium">Fees</p>
+          <p className="text-sm font-bold text-red-700">-{formatCurrency(breakdown.fees)}</p>
+        </div>
+        <div className="bg-orange-50 rounded-lg p-2 text-center">
+          <p className="text-xs text-orange-600 font-medium">Refunds</p>
+          <p className="text-sm font-bold text-orange-700">-{formatCurrency(breakdown.refunds)}</p>
+        </div>
+        <div className="bg-yellow-50 rounded-lg p-2 text-center">
+          <p className="text-xs text-yellow-600 font-medium">Adjustments</p>
+          <p className="text-sm font-bold text-yellow-700">{formatCurrency(breakdown.adjustments)}</p>
+        </div>
+        <div className="bg-blue-50 rounded-lg p-2 text-center">
+          <p className="text-xs text-blue-600 font-medium">Net Amount</p>
+          <p className="text-sm font-bold text-blue-700">{formatCurrency(breakdown.net_amount)}</p>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-bakery-50">
