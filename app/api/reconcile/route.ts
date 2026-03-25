@@ -1,3 +1,4 @@
+// api/reconcile/route.ts - CORRECTED VERSION
 import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
@@ -9,9 +10,17 @@ export const config = {
   },
 };
 
+interface CategoryTotals {
+  sales_amount: number;
+  refund_amount: number;
+  net_amount: number;
+  transaction_count: number;
+}
+
 interface PayoutRecord {
   filename: string;
   data: any[];
+  category_totals: Record<string, CategoryTotals>;
   uncategorized: any[];
   total_orders: number;
   matched_orders: number;
@@ -95,33 +104,25 @@ export async function POST(request: NextRequest) {
     const salesText = await salesFile.text();
     const salesData = Papa.parse(salesText, { header: true, skipEmptyLines: true }).data;
     
-    // Separate positive sales and negative refunds
-    const salesDF = salesData.map((row: any) => ({
-      Order_Number: row['Order name'] || row['Order_Number'] || '',
-      Sales_ID: row['Sale ID'] || row['Sales_ID'] || '',
-      Category: row['Product type'] || row['Category'] || 'Uncategorized',
-      Amount: parseFloat(row['Total sales'] || row['Amount'] || 0)
-    })).filter(row => row.Order_Number);
-
-    const positiveSales = salesDF.filter(row => row.Amount > 0);
-    const refundSales = salesDF.filter(row => row.Amount < 0);
-    
-    // Group positive sales by order number
-    const salesTotals = new Map();
-    positiveSales.forEach(row => {
-      const current = salesTotals.get(row.Order_Number) || 0;
-      salesTotals.set(row.Order_Number, current + row.Amount);
-    });
-    
-    // Group refunds by order number with their categories
-    const refundsByOrder = new Map();
-    refundSales.forEach(row => {
-      const refunds = refundsByOrder.get(row.Order_Number) || [];
-      refunds.push({
-        Category: row.Category,
-        Amount: Math.abs(row.Amount) // Store as positive for display
+    // Create a map of sales by order number with their categories and amounts
+    // Each order can have multiple line items (different products)
+    const salesByOrder = new Map();
+    salesData.forEach((row: any) => {
+      const orderNumber = row['Order name'] || row['Order_Number'] || '';
+      const category = row['Product type'] || row['Category'] || 'Uncategorized';
+      const amount = parseFloat(row['Total sales'] || row['Amount'] || 0);
+      
+      if (!orderNumber) return;
+      
+      if (!salesByOrder.has(orderNumber)) {
+        salesByOrder.set(orderNumber, []);
+      }
+      
+      salesByOrder.get(orderNumber).push({
+        category,
+        amount,
+        type: amount > 0 ? 'Sale' : 'Refund'
       });
-      refundsByOrder.set(row.Order_Number, refunds);
     });
 
     const results: PayoutRecord[] = [];
@@ -152,6 +153,7 @@ export async function POST(request: NextRequest) {
         results.push({
           filename: payoutFile.name,
           data: [],
+          category_totals: {},
           uncategorized: [],
           total_orders: 0,
           matched_orders: 0,
@@ -177,7 +179,8 @@ export async function POST(request: NextRequest) {
 
       const processedData: any[] = [];
       const uncategorizedData: any[] = [];
-      
+      const categoryTotals: Record<string, CategoryTotals> = {};
+
       for (const row of payoutData) {
         const orderNumber = row[orderCol];
         const grossAmount = parseFloat(row['Amount'] || row['Gross_Amount'] || 0);
@@ -186,6 +189,7 @@ export async function POST(request: NextRequest) {
         const refundAmount = parseFloat(row['Refund'] || row['Refund_Amount'] || 0);
         const adjustmentAmount = parseFloat(row['Adjustment'] || row['Adjustment_Amount'] || 0);
         const payoutDate = row['Payout Date'] || row['Payout_Date'] || '';
+        const transactionDate = row['Transaction Date'] || row['Transaction_Date'] || payoutDate;
         const transactionType = (row['Type'] || row['Transaction Type'] || '').toLowerCase();
         
         breakdown.gross_amount += grossAmount;
@@ -193,17 +197,14 @@ export async function POST(request: NextRequest) {
         breakdown.net_amount += netAmount;
         breakdown.refunds += refundAmount;
         breakdown.adjustments += adjustmentAmount;
-
-        // Check for refunds in this order
-        const orderRefunds = refundsByOrder.get(orderNumber) || [];
         
         // Find matching sales for this order
-        const matchingSales = positiveSales.filter(sale => sale.Order_Number === orderNumber);
+        const matchingSales = salesByOrder.get(orderNumber) || [];
         
-        if (matchingSales.length === 0 && orderRefunds.length === 0) {
-          // Uncategorized transaction
+        if (matchingSales.length === 0) {
+          // Uncategorized transaction - no matching sales found
           uncategorizedData.push({
-            Transaction_Date: row['Transaction Date'] || row['Transaction_Date'] || payoutDate,
+            Transaction_Date: transactionDate,
             Payout_Date: payoutDate,
             Order_Number: orderNumber,
             Category: 'Uncategorized',
@@ -212,46 +213,52 @@ export async function POST(request: NextRequest) {
           });
           continue;
         }
-
-        // Process each transaction - combine sales and refunds
-        const orderItems = [];
         
-        // Add sales items
-        if (matchingSales.length > 0) {
-          const orderTotalSales = salesTotals.get(orderNumber) || 1;
-          for (const sale of matchingSales) {
-            const scaledAmount = (sale.Amount / orderTotalSales) * grossAmount;
-            orderItems.push({
-              Transaction_Date: row['Transaction Date'] || row['Transaction_Date'] || payoutDate,
-              Payout_Date: payoutDate,
-              Category: sale.Category,
-              Amount: scaledAmount,
-              Type: 'Sale',
-              Order_Number: orderNumber
-            });
-            
-            summaryStats.categories[sale.Category] = 
-              (summaryStats.categories[sale.Category] || 0) + scaledAmount;
-            summaryStats.total_sales_matched += scaledAmount;
+        // For each matching sale line item, create a transaction record
+        // This ensures 1:1 mapping between sales line items and payout items
+        for (const sale of matchingSales) {
+          const isRefund = sale.type === 'Refund';
+          const amount = isRefund ? -Math.abs(sale.amount) : sale.amount;
+          
+          const transaction = {
+            Transaction_Date: transactionDate,
+            Payout_Date: payoutDate,
+            Order_Number: orderNumber,
+            Category: sale.category,
+            Amount: amount,
+            Type: isRefund ? 'Refund' : 'Sale'
+          };
+          
+          processedData.push(transaction);
+          
+          // Update category totals
+          if (!categoryTotals[sale.category]) {
+            categoryTotals[sale.category] = {
+              sales_amount: 0,
+              refund_amount: 0,
+              net_amount: 0,
+              transaction_count: 0
+            };
           }
-        }
-        
-        // Add refund items
-        if (orderRefunds.length > 0) {
-          for (const refund of orderRefunds) {
-            orderItems.push({
-              Transaction_Date: row['Transaction Date'] || row['Transaction_Date'] || payoutDate,
-              Payout_Date: payoutDate,
-              Category: refund.Category,
-              Amount: -refund.Amount, // Negative amount for refunds
-              Type: 'Refund',
-              Order_Number: orderNumber
-            });
-            summaryStats.total_refunds += refund.Amount;
+          
+          if (isRefund) {
+            categoryTotals[sale.category].refund_amount += Math.abs(amount);
+            categoryTotals[sale.category].net_amount += amount; // amount is negative here
+          } else {
+            categoryTotals[sale.category].sales_amount += amount;
+            categoryTotals[sale.category].net_amount += amount;
           }
+          categoryTotals[sale.category].transaction_count += 1;
+          
+          // Update summary stats
+          if (isRefund) {
+            summaryStats.total_refunds += Math.abs(amount);
+          } else {
+            summaryStats.total_sales_matched += amount;
+          }
+          summaryStats.categories[sale.category] = 
+            (summaryStats.categories[sale.category] || 0) + amount;
         }
-        
-        processedData.push(...orderItems);
       }
 
       summaryStats.total_payouts += breakdown.gross_amount;
@@ -271,6 +278,7 @@ export async function POST(request: NextRequest) {
           }, '')
         },
         data: processedData,
+        category_totals: categoryTotals,
         uncategorized: uncategorizedData,
         total_orders: payoutData.length,
         matched_orders: processedData.filter(item => item.Type !== 'Refund').length,
@@ -281,6 +289,27 @@ export async function POST(request: NextRequest) {
     // Create Excel file
     const workbook = XLSX.utils.book_new();
     const usedSheetNames = new Set<string>();
+    
+    // Create a summary sheet with category totals
+    const categorySummaryData: any[] = [];
+    results.forEach(result => {
+      Object.entries(result.category_totals).forEach(([category, totals]) => {
+        categorySummaryData.push({
+          'Payout File': result.filename,
+          'Category': category,
+          'Sales Amount': totals.sales_amount,
+          'Refund Amount': totals.refund_amount,
+          'Net Amount': totals.net_amount,
+          'Transaction Count': totals.transaction_count
+        });
+      });
+    });
+    
+    if (categorySummaryData.length > 0) {
+      const categorySheet = XLSX.utils.json_to_sheet(categorySummaryData);
+      const categorySheetName = getUniqueSheetName('Category_Summary', usedSheetNames);
+      XLSX.utils.book_append_sheet(workbook, categorySheet, categorySheetName);
+    }
     
     const allData = results.flatMap(result => 
       result.data.map(row => ({
@@ -297,6 +326,26 @@ export async function POST(request: NextRequest) {
     
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
+      
+      // Create a category totals sheet for this payout
+      if (Object.keys(result.category_totals).length > 0) {
+        const categoryData = Object.entries(result.category_totals).map(([category, totals]) => ({
+          Category: category,
+          'Sales Amount': totals.sales_amount,
+          'Refund Amount': totals.refund_amount,
+          'Net Amount': totals.net_amount,
+          'Transaction Count': totals.transaction_count
+        }));
+        const categorySheet = XLSX.utils.json_to_sheet(categoryData);
+        let baseName = `${result.filename.replace(/\.csv$/i, '')}_Categories`;
+        
+        if (baseName.length > 25) {
+          baseName = `File_${i + 1}_Categories`;
+        }
+        
+        const sheetName = getUniqueSheetName(baseName, usedSheetNames);
+        XLSX.utils.book_append_sheet(workbook, categorySheet, sheetName);
+      }
       
       if (result.data.length > 0) {
         const sheet = XLSX.utils.json_to_sheet(result.data);
